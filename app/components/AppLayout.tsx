@@ -18,7 +18,12 @@ export function AppLayout({ children }: { children: ReactNode }) {
       >
         <div>
           <Link href="/">
-            <Image src="/logo.png" height={80} width={180} alt="DexTab" />
+            <Image
+              src="/assets/logo.png"
+              height={80}
+              width={180}
+              alt="DexTab"
+            />
           </Link>
         </div>
         <div>

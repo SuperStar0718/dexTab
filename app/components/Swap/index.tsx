@@ -109,11 +109,11 @@ export default function Swap() {
 
     const quote = await (
       await fetch(
-        `https://quote-api.jup.ag/v6/quote
-        ?inputMint=${fromAsset.address}
-        &outputMint=${toAsset.address}
-        &amount=${currentAmount * Math.pow(10, fromAsset.decimals)}
-        &slippage=0.5`
+        `https://quote-api.jup.ag/v6/quote?inputMint=${
+          fromAsset.address
+        }&outputMint=${toAsset.address}&amount=${
+          currentAmount * Math.pow(10, fromAsset.decimals)
+        }&slippage=0.5`
       )
     ).json();
 
