@@ -1,14 +1,14 @@
 import { ReactNode } from 'react';
-// import Link from 'next/link';
-// import Image from 'next/image';
-// import { WalletButton } from './SolanaProvider';
+import Link from 'next/link';
+import Image from 'next/image';
+import { WalletButton } from './SolanaProvider';
 
 /////////////////////////////////////////////////////////////////////////////
 
 export function AppLayout({ children }: { children: ReactNode }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-      {/* <div
+      <div
         style={{
           display: 'flex',
           alignItems: 'center',
@@ -29,16 +29,16 @@ export function AppLayout({ children }: { children: ReactNode }) {
         <div>
           <WalletButton />
         </div>
-      </div> */}
+      </div>
       <div style={{ flexGrow: 1, padding: '6px' }}>{children}</div>
-      {/* <footer
+      <footer
         style={{
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
           padding: '6px 10px',
         }}
-      ></footer> */}
+      ></footer>
     </div>
   );
 }
