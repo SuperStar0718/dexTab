@@ -8,6 +8,7 @@ import {
 } from '@solana/wallet-adapter-react';
 import { WalletModalProvider } from '@solana/wallet-adapter-react-ui';
 import { SolflareWalletAdapter } from '@solana/wallet-adapter-solflare';
+import { PhantomWalletAdapter } from '@solana/wallet-adapter-phantom';
 import { toWalletAdapterNetwork, useCluster } from './ClusterDataAccess';
 import '@solana/wallet-adapter-react-ui/styles.css';
 
@@ -26,6 +27,9 @@ export function SolanaProvider({ children }: { children: ReactNode }) {
   const endpoint = useMemo(() => cluster.endpoint, [cluster]);
   const wallets = useMemo(
     () => [
+      new PhantomWalletAdapter({
+        network: toWalletAdapterNetwork(cluster.network),
+      }),
       new SolflareWalletAdapter({
         network: toWalletAdapterNetwork(cluster.network),
       }),
