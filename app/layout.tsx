@@ -2,6 +2,7 @@ import { Montserrat } from 'next/font/google';
 import { AppLayout } from '@/components/AppLayout';
 import { ClusterProvider } from '@/components/ClusterDataAccess';
 import { SolanaProvider } from '@/components/SolanaProvider';
+import 'animate.css';
 import './globals.css';
 
 /////////////////////////////////////////////////////////////////////////////
