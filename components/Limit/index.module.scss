@@ -8,14 +8,10 @@
 }
 
 .innerContainer {
-  width: 90%;
-  max-width: 600px;
-  background-color: #230a31;
-  padding: 20px;
-  border-radius: 12px;
+  display: flex;
+  width: 100%;
   gap: 25px;
   color: white;
-  display: flex;
   flex-direction: column;
 }
 

@@ -1,15 +1,16 @@
 'use client';
 import React, { useState, useEffect } from 'react';
-import { VersionedTransaction, Connection } from '@solana/web3.js';
-import { useWallet, Wallet } from '@solana/wallet-adapter-react';
-import { Button } from '@/components/ui/button';
-import styles from './index.module.scss';
+import { VersionedTransaction, Connection, Keypair } from '@solana/web3.js';
+import { useWallet } from '@solana/wallet-adapter-react';
 import {
   createJupiterApiClient,
   QuoteGetRequest,
   QuoteResponse,
 } from '@jup-ag/api';
+import { LimitOrderProvider, ownerFilter } from '@jup-ag/limit-order-sdk';
 import { transactionSenderAndConfirmationWaiter } from '@/lib/transactionSender';
+import { Button } from '@/components/ui/button';
+import styles from './index.module.scss';
 
 /////////////////////////////////////////////////////////////////////////////
 
@@ -40,12 +41,21 @@ const debounce = <T extends unknown[]>(
 
 /////////////////////////////////////////////////////////////////////////////
 
-export default function Swap() {
+export default function Limit() {
   const wallet = useWallet();
   const connection = new Connection(
     'https://fabled-green-frog.solana-mainnet.quiknode.pro/f7944976a48ec80e8628553e4636a3adff6c1ca5'
   );
   const jupiterQuoteApi = createJupiterApiClient();
+  const limitOrder = new LimitOrderProvider(
+    connection
+    // referralPubKey and referalName are both optional.
+    // Please provide both to get referral fees.
+    // More details in the section below.
+    // referralPubKey,
+    // referralName
+  );
+  const base = Keypair.generate();
 
   const [tokenList, setTokenList] = useState<Token[] | undefined>([]);
   const [fromAsset, setFromAsset] = useState<Token | undefined>(undefined);
@@ -76,7 +86,24 @@ export default function Swap() {
       setToAsset(tokenList[1]);
     }
   }, [tokenList]);
-  // console.log(tokenList);
+
+  const getOpenOrders = async () => {
+    const openOrdersRes = await (
+      await fetch(
+        `https://jup.ag/api/limit/v1/openOrders?wallet=${wallet.publicKey?.toString()}`
+      )
+    ).json();
+    console.log({ openOrdersRes });
+  };
+
+  const getOrderHistory = async () => {
+    const orderHistoryRes = await (
+      await fetch(
+        `https://jup.ag/api/limit/v1/orderHistory?wallet=${wallet.publicKey?.toString()}`
+      )
+    ).json();
+    console.log({ orderHistoryRes });
+  };
 
   const handleFromAssetChange = async (
     event: React.ChangeEvent<HTMLSelectElement>
@@ -125,11 +152,13 @@ export default function Swap() {
       amount: currentAmount * Math.pow(10, fromAsset.decimals),
       autoSlippage: true,
       autoSlippageCollisionUsdValue: 1_000,
+      maxAutoSlippageBps: 1000, // 10%
       minimizeSlippage: true,
       onlyDirectRoutes: false,
       asLegacyTransaction: false,
     };
 
+    // get quote
     const quote = await jupiterQuoteApi.quoteGet(params);
 
     if (!quote) {
@@ -145,27 +174,6 @@ export default function Swap() {
     setQuoteResponse(quote);
   }
 
-  async function getSwapObj() {
-    if (!quoteResponse || !wallet.publicKey) {
-      console.error('Quote response or wallet public key is null');
-      return;
-    }
-
-    const swapObj = await jupiterQuoteApi.swapPost({
-      swapRequest: {
-        quoteResponse,
-        userPublicKey: wallet.publicKey?.toString(),
-        wrapAndUnwrapSol: true,
-        dynamicComputeUnitLimit: true,
-        prioritizationFeeLamports: 'auto',
-        // feeAccount is optional. Use if you want to charge a fee.  feeBps must have been passed in /quote API.
-        // feeAccount: "fee_account_public_key"
-      },
-    });
-
-    return swapObj;
-  }
-
   async function signAndSendTransaction() {
     if (!wallet.connected || !wallet.signTransaction) {
       console.error(
@@ -173,63 +181,80 @@ export default function Swap() {
       );
       return;
     }
+    setIsLoading(true);
 
-    const swapObj = await getSwapObj();
+    const { tx } = await (
+      await fetch('https://jup.ag/api/limit/v1/createOrder', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          owner: wallet.publicKey?.toString(),
+          inAmount: (fromAmount || 0) * Math.pow(10, fromAsset?.decimals || 0),
+          outAmount:
+            (toAmount || 0) * Math.pow(10, toAsset?.decimals || 0) * 0.9,
+          inputMint: fromAsset?.address,
+          outputMint: toAsset?.address,
+          expiredAt: null, // new Date().valueOf() / 1000,
+          base: base.publicKey.toString(),
+          dynamicComputeUnitLimit: true,
+          prioritizationFeeLamports: 'auto',
+          // referralAccount: referralPublicKey,
+          // referralName: "Referral Name"
+        }),
+      })
+    ).json();
 
-    if (!swapObj) {
-      console.error('Swap object is null');
+    const transactionBuf = Buffer.from(tx, 'base64');
+    const transaction = VersionedTransaction.deserialize(transactionBuf);
+
+    // Sign the transaction
+    const signedTransaction = await wallet.signTransaction(transaction);
+
+    // We first simulate whether the transaction would be successful
+    const { value: simulatedTransactionResponse } =
+      await connection.simulateTransaction(transaction, {
+        replaceRecentBlockhash: true,
+        commitment: 'processed',
+      });
+    const { err, logs } = simulatedTransactionResponse;
+
+    if (err) {
+      // Simulation error, we can check the logs for more details
+      // If you are getting an invalid account error, make sure that you have the input mint account to actually swap from.
+      console.error('Simulation Error:');
+      console.error({ err, logs });
       return;
     }
 
-    try {
-      // Serialize the transaction
-      const swapTransactionBuf = Buffer.from(swapObj.swapTransaction, 'base64');
-      var transaction = VersionedTransaction.deserialize(swapTransactionBuf);
+    const serializedTransaction = Buffer.from(signedTransaction.serialize());
+    const blockhash = signedTransaction.message.recentBlockhash;
+    const latestBlockHash = await connection.getLatestBlockhash();
 
-      // Sign the transaction
-      const signedTransaction = await wallet.signTransaction(transaction);
+    const transactionResponse = await transactionSenderAndConfirmationWaiter({
+      connection,
+      serializedTransaction,
+      blockhashWithExpiryBlockHeight: {
+        blockhash,
+        lastValidBlockHeight: latestBlockHash.lastValidBlockHeight,
+      },
+    });
 
-      // We first simulate whether the transaction would be successful
-      const { value: simulatedTransactionResponse } =
-        await connection.simulateTransaction(transaction, {
-          replaceRecentBlockhash: true,
-          commitment: 'processed',
-        });
-      const { err, logs } = simulatedTransactionResponse;
-
-      if (err) {
-        // Simulation error, we can check the logs for more details
-        // If you are getting an invalid account error, make sure that you have the input mint account to actually swap from.
-        console.error('Simulation Error:');
-        console.error({ err, logs });
-        return;
-      }
-
-      const serializedTransaction = Buffer.from(signedTransaction.serialize());
-      const blockhash = transaction.message.recentBlockhash;
-
-      const transactionResponse = await transactionSenderAndConfirmationWaiter({
-        connection,
-        serializedTransaction,
-        blockhashWithExpiryBlockHeight: {
-          blockhash,
-          lastValidBlockHeight: swapObj.lastValidBlockHeight,
-        },
-      });
-
-      // If we are not getting a response back, the transaction has not confirmed.
-      if (!transactionResponse) {
-        console.error('Transaction not confirmed');
-        return;
-      }
-
-      if (transactionResponse.meta?.err) {
-        console.error(transactionResponse.meta?.err);
-      }
-    } catch (error) {
-      console.error('Error signing or sending the transaction:', error);
+    // If we are not getting a response back, the transaction has not confirmed.
+    if (!transactionResponse) {
+      console.error('Transaction not confirmed');
+      // return;
     }
+
+    if (transactionResponse?.meta?.err) {
+      console.error(transactionResponse.meta?.err);
+    }
+    setIsLoading(false);
   }
+
+  // getOpenOrders();
+  // getOrderHistory();
 
   return (
     <div className={styles.body}>
