@@ -1,7 +1,8 @@
 'use client';
 import React, { useState, useEffect } from 'react';
+import fetch from 'cross-fetch';
 import { VersionedTransaction, Connection } from '@solana/web3.js';
-import { useWallet, Wallet } from '@solana/wallet-adapter-react';
+import { useWallet } from '@solana/wallet-adapter-react';
 import { Button } from '@/components/ui/button';
 import styles from './index.module.scss';
 import {
@@ -76,7 +77,6 @@ export default function Swap() {
       setToAsset(tokenList[1]);
     }
   }, [tokenList]);
-  // console.log(tokenList);
 
   const handleFromAssetChange = async (
     event: React.ChangeEvent<HTMLSelectElement>

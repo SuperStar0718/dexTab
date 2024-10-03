@@ -1,16 +1,23 @@
 'use client';
 import React, { useState, useEffect } from 'react';
-import { VersionedTransaction, Connection, Keypair } from '@solana/web3.js';
+import {
+  VersionedTransaction,
+  Connection,
+  Keypair,
+  ComputeBudgetProgram,
+  SystemProgram,
+  AddressLookupTableAccount,
+  TransactionMessage,
+} from '@solana/web3.js';
 import { useWallet } from '@solana/wallet-adapter-react';
+import { Button } from '@/components/ui/button';
+import styles from './index.module.scss';
+import { transactionSenderAndConfirmationWaiter } from '@/lib/transactionSender';
 import {
   createJupiterApiClient,
   QuoteGetRequest,
   QuoteResponse,
 } from '@jup-ag/api';
-import { LimitOrderProvider, ownerFilter } from '@jup-ag/limit-order-sdk';
-import { transactionSenderAndConfirmationWaiter } from '@/lib/transactionSender';
-import { Button } from '@/components/ui/button';
-import styles from './index.module.scss';
 
 /////////////////////////////////////////////////////////////////////////////
 
@@ -47,14 +54,6 @@ export default function Limit() {
     'https://fabled-green-frog.solana-mainnet.quiknode.pro/f7944976a48ec80e8628553e4636a3adff6c1ca5'
   );
   const jupiterQuoteApi = createJupiterApiClient();
-  const limitOrder = new LimitOrderProvider(
-    connection
-    // referralPubKey and referalName are both optional.
-    // Please provide both to get referral fees.
-    // More details in the section below.
-    // referralPubKey,
-    // referralName
-  );
   const base = Keypair.generate();
 
   const [tokenList, setTokenList] = useState<Token[] | undefined>([]);
@@ -209,6 +208,36 @@ export default function Limit() {
     const transactionBuf = Buffer.from(tx, 'base64');
     const transaction = VersionedTransaction.deserialize(transactionBuf);
 
+    // construct the priority fee instruction
+    const addPriorityFee = ComputeBudgetProgram.setComputeUnitPrice({
+      microLamports: 1000,
+    });
+
+    // get address lookup table accounts
+    const addressLookupTableAccounts = await Promise.all(
+      transaction.message.addressTableLookups.map(async (lookup) => {
+        return new AddressLookupTableAccount({
+          key: lookup.accountKey,
+          state: AddressLookupTableAccount.deserialize(
+            await connection
+              .getAccountInfo(lookup.accountKey)
+              .then((res) => res!.data)
+          ),
+        });
+      })
+    );
+
+    // decompile transaction message and add priority fee instruction
+    var message = TransactionMessage.decompile(transaction.message, {
+      addressLookupTableAccounts: addressLookupTableAccounts,
+    });
+    message.instructions.push(addPriorityFee);
+
+    // compile the message and update the transaction
+    transaction.message = message.compileToV0Message(
+      addressLookupTableAccounts
+    );
+
     // Sign the transaction
     const signedTransaction = await wallet.signTransaction(transaction);
 
@@ -229,8 +258,8 @@ export default function Limit() {
     }
 
     const serializedTransaction = Buffer.from(signedTransaction.serialize());
-    const blockhash = signedTransaction.message.recentBlockhash;
     const latestBlockHash = await connection.getLatestBlockhash();
+    const blockhash = latestBlockHash.blockhash;
 
     const transactionResponse = await transactionSenderAndConfirmationWaiter({
       connection,
