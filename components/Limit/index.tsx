@@ -10,14 +10,15 @@ import {
   TransactionMessage,
 } from '@solana/web3.js';
 import { useWallet } from '@solana/wallet-adapter-react';
-import { Button } from '@/components/ui/button';
-import styles from './index.module.scss';
-import { transactionSenderAndConfirmationWaiter } from '@/lib/transactionSender';
 import {
   createJupiterApiClient,
   QuoteGetRequest,
   QuoteResponse,
 } from '@jup-ag/api';
+import { transactionSenderAndConfirmationWaiter } from '@/lib/transactionSender';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Button } from '@/components/ui/button';
+import styles from './index.module.scss';
 
 /////////////////////////////////////////////////////////////////////////////
 
@@ -61,19 +62,39 @@ export default function Limit() {
   const [toAsset, setToAsset] = useState<Token | undefined>(undefined);
   const [fromAmount, setFromAmount] = useState<number | undefined>();
   const [toAmount, setToAmount] = useState<number | undefined>();
-  const [quoteResponse, setQuoteResponse] = useState<QuoteResponse | null>(
-    null
-  );
+  const [limitRate, setLimitRate] = useState<number | undefined>();
+  const [shouldUpdateLimitRate, setShouldUpdateLimitRate] =
+    useState<boolean>(true);
   const [isLoading, setIsLoading] = useState(false);
+  const [openOrders, setOpenOrders] = useState<any[]>([]);
+  const [orderHistory, setOrderHistory] = useState<any[]>([]);
 
-  async function getTokenList() {
+  const getTokenList = async () => {
     setIsLoading(true);
     const tokenList = await (
       await fetch('https://tokens.jup.ag/tokens?tags=verified')
     ).json();
     setTokenList(tokenList);
     setIsLoading(false);
-  }
+  };
+
+  const getOpenOrders = async () => {
+    const openOrdersRes = await (
+      await fetch(
+        `https://jup.ag/api/limit/v1/openOrders?wallet=${wallet.publicKey?.toString()}`
+      )
+    ).json();
+    setOpenOrders(openOrdersRes);
+  };
+
+  const getOrderHistory = async () => {
+    const orderHistoryRes = await (
+      await fetch(
+        `https://jup.ag/api/limit/v1/orderHistory?wallet=${wallet.publicKey?.toString()}`
+      )
+    ).json();
+    setOrderHistory(orderHistoryRes);
+  };
 
   useEffect(() => {
     getTokenList();
@@ -86,22 +107,35 @@ export default function Limit() {
     }
   }, [tokenList]);
 
-  const getOpenOrders = async () => {
-    const openOrdersRes = await (
-      await fetch(
-        `https://jup.ag/api/limit/v1/openOrders?wallet=${wallet.publicKey?.toString()}`
-      )
-    ).json();
-    console.log({ openOrdersRes });
+  useEffect(() => {
+    if (!isLoading) {
+      getOpenOrders();
+      getOrderHistory();
+    }
+  }, [isLoading]);
+
+  const getTokenSymbolFromCA = (ca: string) => {
+    return tokenList?.find((asset) => asset.address === ca)?.symbol;
   };
 
-  const getOrderHistory = async () => {
-    const orderHistoryRes = await (
-      await fetch(
-        `https://jup.ag/api/limit/v1/orderHistory?wallet=${wallet.publicKey?.toString()}`
-      )
+  const getTokenDecimalsFromCA = (ca: string) => {
+    return tokenList?.find((asset) => asset.address === ca)?.decimals;
+  };
+
+  const cancelOrder = async (base: string) => {
+    const res = await (
+      await fetch(`https://jup.ag/api/limit/v1/cancelOrder`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          owner: wallet.publicKey?.toString(),
+          orders: [base],
+        }),
+      })
     ).json();
-    console.log({ orderHistoryRes });
+    console.log({ res });
   };
 
   const handleFromAssetChange = async (
@@ -126,6 +160,13 @@ export default function Limit() {
     setFromAmount(Number(event.target.value));
   };
 
+  const handleLimitRateChange = (
+    event: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    setShouldUpdateLimitRate(false);
+    setLimitRate(Number(event.target.value));
+  };
+
   const debounceQuoteCall = debounce(getQuote, 500);
 
   useEffect(() => {
@@ -133,6 +174,31 @@ export default function Limit() {
       debounceQuoteCall(fromAmount);
     }
   }, [fromAmount, debounceQuoteCall]);
+
+  async function isBlockhashExpired(
+    connection: Connection,
+    lastValidBlockHeight: number
+  ) {
+    let currentBlockHeight = await connection.getBlockHeight('finalized');
+    console.log('                           ');
+    console.log('Current Block height:             ', currentBlockHeight);
+    console.log(
+      'Last Valid Block height - 150:     ',
+      lastValidBlockHeight - 150
+    );
+    console.log('--------------------------------------------');
+    console.log(
+      'Difference:                      ',
+      currentBlockHeight - (lastValidBlockHeight - 150)
+    ); // If Difference is positive, blockhash has expired.
+    console.log('                           ');
+
+    return currentBlockHeight > lastValidBlockHeight - 150;
+  }
+
+  const sleep = (ms: number) => {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  };
 
   async function getQuote(currentAmount: number) {
     if (isNaN(currentAmount) || currentAmount <= 0) {
@@ -165,12 +231,17 @@ export default function Limit() {
     }
 
     if (quote && quote.outAmount) {
+      const inAmountNumber = currentAmount * Math.pow(10, fromAsset.decimals);
       const outAmountNumber =
         Number(quote.outAmount) / Math.pow(10, toAsset.decimals);
-      setToAmount(outAmountNumber);
-    }
 
-    setQuoteResponse(quote);
+      if (shouldUpdateLimitRate) {
+        setToAmount(outAmountNumber);
+        setLimitRate(outAmountNumber / currentAmount);
+      } else {
+        setToAmount(currentAmount * Number(limitRate));
+      }
+    }
   }
 
   async function signAndSendTransaction() {
@@ -181,6 +252,7 @@ export default function Limit() {
       return;
     }
     setIsLoading(true);
+    const START_TIME = new Date();
 
     const { tx } = await (
       await fetch('https://jup.ag/api/limit/v1/createOrder', {
@@ -192,7 +264,9 @@ export default function Limit() {
           owner: wallet.publicKey?.toString(),
           inAmount: (fromAmount || 0) * Math.pow(10, fromAsset?.decimals || 0),
           outAmount:
-            (toAmount || 0) * Math.pow(10, toAsset?.decimals || 0) * 0.9,
+            (limitRate || 0) *
+            (fromAmount || 0) *
+            Math.pow(10, toAsset?.decimals || 0),
           inputMint: fromAsset?.address,
           outputMint: toAsset?.address,
           expiredAt: null, // new Date().valueOf() / 1000,
@@ -210,7 +284,7 @@ export default function Limit() {
 
     // construct the priority fee instruction
     const addPriorityFee = ComputeBudgetProgram.setComputeUnitPrice({
-      microLamports: 1000,
+      microLamports: 1000000,
     });
 
     // get address lookup table accounts
@@ -238,6 +312,8 @@ export default function Limit() {
       addressLookupTableAccounts
     );
 
+    transaction.sign([base]);
+
     // Sign the transaction
     const signedTransaction = await wallet.signTransaction(transaction);
 
@@ -258,18 +334,20 @@ export default function Limit() {
     }
 
     const serializedTransaction = Buffer.from(signedTransaction.serialize());
-    const latestBlockHash = await connection.getLatestBlockhash();
-    const blockhash = latestBlockHash.blockhash;
+    const latestBlockHash = await connection.getLatestBlockhashAndContext(
+      'finalized'
+    );
+    const blockhash = latestBlockHash.value.blockhash;
 
     const transactionResponse = await transactionSenderAndConfirmationWaiter({
       connection,
       serializedTransaction,
       blockhashWithExpiryBlockHeight: {
         blockhash,
-        lastValidBlockHeight: latestBlockHash.lastValidBlockHeight,
+        lastValidBlockHeight: latestBlockHash.value.lastValidBlockHeight,
       },
     });
-
+    console.log({ transactionResponse });
     // If we are not getting a response back, the transaction has not confirmed.
     if (!transactionResponse) {
       console.error('Transaction not confirmed');
@@ -280,10 +358,56 @@ export default function Limit() {
       console.error(transactionResponse.meta?.err);
     }
     setIsLoading(false);
-  }
 
-  // getOpenOrders();
-  // getOrderHistory();
+    let hashExpired = false;
+    let txSuccess = false;
+    while (!hashExpired && !txSuccess) {
+      const { value: statuses } = await connection.getSignatureStatuses(
+        transactionResponse?.transaction.signatures || []
+      );
+
+      if (!statuses || statuses.length === 0) {
+        throw new Error('Failed to get signature status');
+      }
+
+      const status = statuses[0];
+
+      if (status?.err) {
+        throw new Error(`Transaction failed: ${JSON.stringify(status.err)}`);
+      }
+
+      // Break loop if transaction has succeeded
+      if (
+        status &&
+        (status.confirmationStatus === 'confirmed' ||
+          status.confirmationStatus === 'finalized')
+      ) {
+        txSuccess = true;
+        const endTime = new Date();
+        const elapsed = (endTime.getTime() - START_TIME.getTime()) / 1000;
+        console.log(`Transaction Success. Elapsed time: ${elapsed} seconds.`);
+        // console.log(`https://explorer.solana.com/tx/${txId}?cluster=devnet`);
+        break;
+      }
+
+      hashExpired = await isBlockhashExpired(
+        connection,
+        latestBlockHash.value.lastValidBlockHeight
+      );
+
+      // Break loop if blockhash has expired
+      if (hashExpired) {
+        const endTime = new Date();
+        const elapsed = (endTime.getTime() - START_TIME.getTime()) / 1000;
+        console.log(`Blockhash has expired. Elapsed time: ${elapsed} seconds.`);
+        // (add your own logic to Fetch a new blockhash and resend the transaction or throw an error)
+        break;
+      }
+
+      // Check again after 2.5 sec
+      await sleep(2500);
+    }
+  }
 
   return (
     <div className={styles.body}>
@@ -308,6 +432,19 @@ export default function Limit() {
               onChange={handleFromValueChange}
               className={styles.inputField}
               placeholder="0.00"
+            />
+          </div>
+        </div>
+
+        <div className={styles.inputContainer}>
+          <div className={styles.label}>{`Buy ${toAsset?.symbol} at rate`}</div>
+          <div className={styles.item}>
+            <input
+              type="number"
+              value={limitRate}
+              className={styles.inputField}
+              placeholder="0.00"
+              onChange={handleLimitRateChange}
             />
           </div>
         </div>
@@ -347,6 +484,79 @@ export default function Limit() {
           {isLoading ? 'Loading...' : 'Swap'}
         </Button>
       </div>
+
+      <Tabs defaultValue="openOrders" className="w-full pt-8 text-center">
+        <TabsList className="bg-[#4b3c54] rounded-3xl mb-4 self-center">
+          <TabsTrigger value="openOrders" className="rounded-3xl">
+            Open Orders
+          </TabsTrigger>
+          <TabsTrigger value="orderHistory" className="rounded-3xl">
+            Order History
+          </TabsTrigger>
+        </TabsList>
+        <TabsContent value="openOrders" className="text-white text-left">
+          {openOrders?.map(({ account, publicKey }) => {
+            const inputSymbol = getTokenSymbolFromCA(account.inputMint);
+            const outputSymbol = getTokenSymbolFromCA(account.outputMint);
+            const inputAmount =
+              account.oriInAmount /
+              Math.pow(10, getTokenDecimalsFromCA(account.inputMint) || 0);
+            const outputAmount =
+              account.oriOutAmount /
+              Math.pow(10, getTokenDecimalsFromCA(account.outputMint) || 0);
+            return (
+              <div className="flex flex-wrap justify-between items-center border border-white/10 pb-4 mb-4 rounded-md p-4 font-medium">
+                <div className="flex flex-col justify-start">
+                  <p className="text-red-800">
+                    {`Sell ${inputAmount} ${inputSymbol}`}
+                  </p>
+                  <p className="text-green-500">{`Buy ${outputAmount} ${outputSymbol}`}</p>
+                </div>
+                {/* <div>
+                  <button
+                    className="bg-red-500 text-white px-4 py-2 rounded-md"
+                    onClick={() => cancelOrder(publicKey)}
+                  >
+                    Cancel order
+                  </button>
+                </div> */}
+                <div>
+                  <p>{`${
+                    outputAmount / inputAmount
+                  } ${outputSymbol} per ${inputSymbol}`}</p>
+                </div>
+              </div>
+            );
+          })}
+        </TabsContent>
+        <TabsContent value="orderHistory" className="text-white text-left">
+          {orderHistory?.map((order) => {
+            const inputSymbol = getTokenSymbolFromCA(order.inputMint);
+            const outputSymbol = getTokenSymbolFromCA(order.outputMint);
+            const inputAmount =
+              order.oriInAmount /
+              Math.pow(10, getTokenDecimalsFromCA(order.inputMint) || 0);
+            const outputAmount =
+              order.oriOutAmount /
+              Math.pow(10, getTokenDecimalsFromCA(order.outputMint) || 0);
+            return (
+              <div className="flex flex-wrap justify-between items-center border border-white/10 pb-4 mb-4 rounded-md p-4 font-medium">
+                <div className="flex flex-col justify-start">
+                  <p className="text-red-800">
+                    {`Sell ${inputAmount} ${inputSymbol}`}
+                  </p>
+                  <p className="text-green-500">{`Buy ${outputAmount} ${outputSymbol}`}</p>
+                </div>
+                <div>
+                  <p>{`${
+                    outputAmount / inputAmount
+                  } ${outputSymbol} per ${inputSymbol}`}</p>
+                </div>
+              </div>
+            );
+          })}
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }
