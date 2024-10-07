@@ -5,7 +5,7 @@ import {
   VersionedTransactionResponse,
 } from '@solana/web3.js';
 import promiseRetry from 'promise-retry';
-import { wait } from './wait';
+import { wait } from './utils';
 
 /////////////////////////////////////////////////////////////////////////////
 
