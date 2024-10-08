@@ -136,7 +136,7 @@ export default function Limit() {
   //////////////////////////////////////////////
 
   const cancelOrder = async (publicKey: string) => {
-    const tx = await cancelOrders(publicKey, [publicKey]);
+    const tx = await cancelOrders([publicKey], wallet);
     signAndSendTransaction({
       tx,
       connection,
